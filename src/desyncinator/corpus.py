@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-SMUGGLING_CLASSES = ("CL.TE", "TE.CL", "TE.TE", "CL.CL")
+SMUGGLING_CLASSES = ("CL.TE", "TE.CL", "TE.TE", "CL.CL", "parse-split")
 CACHE_FINDINGS = ("deception", "poisoning")
 KINDS = SMUGGLING_CLASSES + CACHE_FINDINGS + ("benign",)
 
@@ -83,31 +83,51 @@ def smuggling_cases() -> list[Case]:
                           frontend="lenient-chunked", backend="lenient-length"),
         description="Chunked front-end hides a request a short CL back-end spills."))
 
-    # TE.TE via an obfuscated token: a strict hop does not recognise "xchunked"
-    # and falls back to Content-Length; a lenient hop fuzzy-matches it to chunked.
-    body = b"0\r\n\r\n" + SMUGGLED
+    # TE.TE: both hops hold a Transfer-Encoding and only the token decides whether
+    # it frames anything. A lenient hop fuzzy-matches "xchunked" and reads the
+    # chunked body; a strict hop reads no chunked coding and, with no
+    # Content-Length to fall back on, frames no body at all, so the whole chunked
+    # body stays in its buffer as the start of the next request. The class is
+    # named for the token because the token is the only reason the hops differ.
+    body = _one_chunk(SMUGGLED)
     cases.append(Case(
         name="te_te_obfuscated_token",
         raw=_lines(b"POST / HTTP/1.1", b"Host: victim.example",
-                   b"Content-Length: %d" % len(body),
                    b"Transfer-Encoding: xchunked", body=body),
         kind="TE.TE",
-        expected=Expected(cls="TE.TE", smuggled=SMUGGLED,
-                          frontend="strict", backend="lenient-chunked"),
-        description="Obfuscated TE token: strict reads CL, lenient reads chunked."))
+        expected=Expected(cls="TE.TE", smuggled=body,
+                          frontend="lenient-chunked", backend="strict"),
+        description="Obfuscated TE token: lenient frames chunked, strict frames none."))
 
-    # TE.TE via space before the colon: the header slips past validation into both
-    # hops, which then disagree on whether length or chunked wins.
+    # The same token with a Content-Length present is the shape seen in the wild,
+    # and it is a different class: the deceived hop still frames a body, from the
+    # length, so the two hops disagree length against chunked. What the token
+    # bought the attacker is a strict hop that accepts the message at all, since
+    # a conforming "chunked" here would make it reject both framings.
     body = b"0\r\n\r\n" + SMUGGLED
     cases.append(Case(
-        name="te_te_space_before_colon",
+        name="cl_te_obfuscated_token",
         raw=_lines(b"POST / HTTP/1.1", b"Host: victim.example",
                    b"Content-Length: %d" % len(body),
-                   b"Transfer-Encoding : chunked", body=body),
-        kind="TE.TE",
-        expected=Expected(cls="TE.TE", smuggled=SMUGGLED,
-                          frontend="lenient-length", backend="lenient-chunked"),
-        description="Space before the colon smuggles TE past a length front-end."))
+                   b"Transfer-Encoding: xchunked", body=body),
+        kind="CL.TE",
+        expected=Expected(cls="CL.TE", smuggled=SMUGGLED,
+                          frontend="strict", backend="lenient-chunked"),
+        description="Obfuscated TE token past a strict hop: it frames the length."))
+
+    # Space before the colon. No profile here reads the message with the header
+    # absent: a lenient hop trims the space and obeys it, a strict hop refuses the
+    # whole message. So the trick cannot frame two boundaries, only split the hops
+    # over whether the request exists; removing the space leaves the lenient pair
+    # ending the body at the same two offsets, so the space causes no boundary.
+    cases.append(Case(
+        name="space_before_colon_split",
+        raw=_lines(b"POST /upload HTTP/1.1", b"Host: victim.example",
+                   b"Transfer-Encoding : chunked", body=_one_chunk(b"Wiki")),
+        kind="parse-split",
+        expected=Expected(cls="parse-split", frontend="lenient-length",
+                          backend="strict"),
+        description="Whitespace before the colon: one hop frames it, one refuses it."))
 
     # Duplicate Content-Length: one hop takes the first value, the other the last,
     # so they cut the body at different offsets.
@@ -235,6 +255,20 @@ def benign_cases() -> list[Case]:
         kind="benign",
         expected=Expected(),
         description="X-Forwarded-Host sent but never reflected: nothing to poison."))
+
+    # The header is reflected, but the cache is told to key on it, so the poisoned
+    # entry is only ever served back to a request carrying the same value.
+    request = _lines(b"GET / HTTP/1.1", b"Host: shop.example",
+                     b"X-Forwarded-Host: evil.example")
+    response = _lines(b"HTTP/1.1 302 Found", b"Location: https://evil.example/",
+                      b"Vary: X-Forwarded-Host",
+                      b"Cache-Control: public, max-age=3600", b"Content-Length: 0")
+    cases.append(Case(
+        name="benign_reflected_but_varied",
+        raw=(request, response),
+        kind="benign",
+        expected=Expected(),
+        description="Reflected host, but Vary puts it in the key: nothing to poison."))
 
     # The header is reflected, but the response forbids caching: no cache entry to
     # poison, so it is a false-positive guard, not a finding.

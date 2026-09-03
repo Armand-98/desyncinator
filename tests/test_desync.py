@@ -13,10 +13,11 @@ from desyncinator.desync import (BOUNDARY, CL_CL, CL_TE, PARSE_SPLIT,
                                  SEVERITY_CRITICAL, SEVERITY_HIGH,
                                  SEVERITY_MEDIUM, TE_CL, TE_TE, Divergence,
                                  analyze, classify, scan)
+from desyncinator.http.message import parse
 from desyncinator.http.profiles import (LENIENT_CHUNKED, LENIENT_LENGTH,
                                         PREFER_LENGTH, PROFILES, STRICT, Profile)
 from desyncinator.http.types import (FRAMING_CHUNKED, FRAMING_CONTENT_LENGTH,
-                                     FRAMING_NONE, Header, Message)
+                                     FRAMING_NONE, Header, Message, ParseError)
 
 ALL = list(PROFILES.values())
 
@@ -131,6 +132,17 @@ def test_te_te_holds_with_the_roles_reversed():
     assert d.smuggled_prefix == b""
 
 
+def test_a_framing_disagreement_that_lands_on_the_same_byte_says_so():
+    """Both hops stop at byte N; the detail must not claim one read past it."""
+    data = req(b"POST / HTTP/1.1", b"Host: h", b"Content-Length: 5",
+               b"Transfer-Encoding: chunked", body=b"0\r\n\r\n")
+    d = analyze(data, LENIENT_LENGTH, LENIENT_CHUNKED)
+    assert d.frontend_body_end == d.backend_body_end
+    assert d.smuggled_prefix == b""
+    assert "consumes the next request" not in d.detail
+    assert "same byte" in d.detail
+
+
 def test_a_clean_chunked_token_with_a_length_is_named_for_the_framings():
     """CL.TE, not TE.TE: nothing tricked either hop about the token itself."""
     assert analyze(CL_TE_DATA, LENIENT_LENGTH, LENIENT_CHUNKED).kind == CL_TE
@@ -223,6 +235,26 @@ def test_clean_requests_end_at_the_same_byte_everywhere(name):
     """The guard behind the guard: agreement is real, not an unparsed input."""
     ends = {p.name: analyze(CLEAN[name], p, STRICT) for p in ALL}
     assert set(ends.values()) == {None}
+
+
+@pytest.mark.parametrize("name", sorted(CLEAN))
+def test_the_clean_guard_is_not_vacuous(name):
+    """Every clean payload must really parse, identically, under every profile.
+
+    analyze() also returns None when neither hop parses, so agreement alone does
+    not prove the guard is guarding anything.
+    """
+    seen = {(m.framing, m.body_end) for m in (parse(CLEAN[name], p) for p in ALL)}
+    assert len(seen) == 1
+
+
+def test_bytes_nobody_parses_satisfy_the_guard_and_are_caught_by_the_premise():
+    """Why the test above exists: silence is also what unparsable bytes produce."""
+    junk = b"not http at all\r\n\r\n"
+    assert all(analyze(junk, f, b) is None for f, b in pairs())
+    for p in ALL:
+        with pytest.raises(ParseError):
+            parse(junk, p)
 
 
 # --- classify on its own ---------------------------------------------------
@@ -348,6 +380,10 @@ HOSTILE = [
     b"GET / HTTP/1.1\nHost: x\n\n",
     b"POST / HTTP/1.1\r\nTransfer-Encoding:\r\nContent-Length: 1\r\n\r\nA",
     b"\xef\xbb\xbfGET / HTTP/1.1\r\nHost: h\r\n\r\n",
+    # str.isdigit() is true of the latin-1 superscripts, int() refuses them.
+    req(b"POST / HTTP/1.1", b"Content-Length: \xb2", body=b"AA"),
+    # More digits than CPython converts without raising.
+    req(b"POST / HTTP/1.1", b"Content-Length: " + b"9" * 5000, body=b"AA"),
 ]
 
 
@@ -357,6 +393,16 @@ def test_hostile_bytes_never_escape_as_an_exception(data):
         result = analyze(data, frontend, backend)
         assert result is None or isinstance(result, Divergence)
     assert isinstance(scan(data), list)
+
+
+@pytest.mark.parametrize("value", [b"\xb2", b"\xb9\xb3", b"9" * 5000])
+def test_a_length_that_looks_numeric_but_will_not_convert_is_a_rejection(value):
+    """A digit str() accepts and int() does not must not escape as a ValueError."""
+    data = req(b"POST / HTTP/1.1", b"Host: h", b"Content-Length: " + value,
+               body=b"AA")
+    assert scan(data) == []
+    for frontend, backend in pairs():
+        assert analyze(data, frontend, backend) is None
 
 
 @pytest.mark.parametrize("cut", range(0, len(CL_TE_DATA), 7))
@@ -369,4 +415,8 @@ def test_offsets_always_lie_inside_the_analysed_bytes():
         for d in scan(data):
             for end in (d.frontend_body_end, d.backend_body_end):
                 assert end is None or 0 <= end <= len(data)
-            assert d.smuggled_prefix in data
+            if d.frontend_body_end is not None and d.backend_body_end is not None:
+                assert d.smuggled_prefix == data[
+                    d.backend_body_end:d.frontend_body_end]
+            else:
+                assert d.smuggled_prefix == b""

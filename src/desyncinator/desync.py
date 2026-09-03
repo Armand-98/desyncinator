@@ -94,10 +94,16 @@ def analyze(data: bytes, frontend: Profile, backend: Profile) -> Divergence | No
 
     kind = classify(front, back)
     prefix = _prefix(data, front.body_end, back.body_end)
-    fate = (f"the {len(prefix)}-byte tail becomes the start of the back-end's "
-            f"next request" if prefix else
-            "the back-end reads past what the front-end forwards and consumes "
-            "the next request on the connection")
+    if prefix:
+        fate = (f"the {len(prefix)}-byte tail becomes the start of the "
+                f"back-end's next request")
+    elif front.body_end == back.body_end:
+        # Only the framings differ, so these bytes smuggle nothing; another body
+        # under the same headers moves the two boundaries apart.
+        fate = ("the two framings happen to meet at the same byte on this body")
+    else:
+        fate = ("the back-end reads past what the front-end forwards and "
+                "consumes the next request on the connection")
     detail = (f"{frontend.name} framed the body as {front.framing} ending at "
               f"byte {front.body_end}, {backend.name} as {back.framing} ending "
               f"at byte {back.body_end}; {fate}")
@@ -167,6 +173,12 @@ def _parse(data: bytes, profile: Profile) -> tuple[Message | None, str]:
         return parse(data, profile), ""
     except ParseError as error:
         return None, str(error)
+    except ValueError as error:
+        # A Content-Length of latin-1 superscripts ("\xb2") or of more digits
+        # than CPython converts is accepted by str.isdigit() and then refused by
+        # int(). The field is malformed either way, so it is one more hop
+        # rejecting the message, not an exception that may escape this tool.
+        return None, f"unusable field: {error}"
 
 
 def _split(frontend: Profile, backend: Profile, front: Message | None,

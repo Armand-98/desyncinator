@@ -106,7 +106,11 @@ def cmd_demo(args) -> int:
             attacks += 1
             caught += fired
             mark = "ok  " if fired else "MISS"
-        print(f"  {mark} {case.kind:12} {case.name:28} {case.description[:40]}")
+        line = f"  {mark} {case.kind:12} {case.name:30}"
+        room = max(12, 78 - len(line) - 1)
+        blurb = case.description if len(case.description) <= room \
+            else case.description[:room - 1].rstrip() + "…"
+        print(f"{line} {blurb}")
     print(f"\n  attacks detected {caught}/{attacks}, "
           f"benign clean {benign_clean}/{benign}")
     return EXIT_CLEAN

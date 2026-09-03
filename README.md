@@ -12,14 +12,14 @@ to one library's single answer. Python 3.10+ standard library only.
 
 ## Measured results
 
-Against the built-in corpus: 8 attack cases across the documented smuggling and
-cache classes, and 6 benign cases shaped to resemble them. Reproduce with
+Against the built-in corpus: 9 attack cases across the documented smuggling and
+cache classes, and 7 benign cases shaped to resemble them. Reproduce with
 `python tools/evaluate.py`.
 
 | | |
 |---|---|
-| Attacks detected | **8/8** |
-| Benign correctly cleared | **6/6** |
+| Attacks detected | **9/9** |
+| Benign correctly cleared | **7/7** |
 | False positives | **0** |
 
 The honest limit: the corpus is written by hand, so it measures the engine
@@ -157,7 +157,7 @@ Stated because a detector without known limits has not been tested properly.
 ## Development
 
 ```bash
-./.venv/bin/python -m pytest        # 220 tests, no network required
+./.venv/bin/python -m pytest        # 247 tests, no network required
 ./.venv/bin/python tools/evaluate.py
 ```
 
