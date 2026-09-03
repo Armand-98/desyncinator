@@ -1,0 +1,31 @@
+[project]
+name = "desyncinator"
+version = "0.1.0"
+description = "Finds where two HTTP hops disagree about a request: message boundaries (request smuggling) and caching (cache deception and poisoning)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Armand Zavala" }]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Armand-98/desyncinator"
+Repository = "https://github.com/Armand-98/desyncinator"
+Issues = "https://github.com/Armand-98/desyncinator/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+desyncinator = "desyncinator.cli:main"
+desync = "desyncinator.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
